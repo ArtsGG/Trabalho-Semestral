@@ -5,6 +5,7 @@
 #include <string.h>    
 #include <ctype.h>     
 #include <strings.h>   // AJUSTE OBRIGATÓRIO: Necessário para garantir a compatibilidade de strcasecmp no ESP32
+#include "thingProperties.h"
 
 // ==========================================================
 // CONFIGURAÇÃO DE REDE
@@ -30,6 +31,9 @@ MFRC522 mfrc522(SS_PIN, RST_PIN);
 // Variável para o controle de tempo não-bloqueante
 static unsigned long lastInteractionTime = 0;
 const unsigned long MIN_INTERACTION_DELAY = 2000; // 2 segundos
+
+// Configuração Arduino Cloud
+char uidLido[25] = "";
 
 // ==========================================================
 // FUNÇÕES AUXILIARES DE LEDS
@@ -138,66 +142,77 @@ void setup()
 {
     Serial.begin(115200);
     while (!Serial);
+
+    // 1. Configuração do Arduino Cloud
+    initProperties(); // Inicializa as propriedades do Cloud
+    ArduinoCloud.begin(ArduinoIoTCloud_Thing_Config); // Inicia a conexão
     
-    connectToWiFi(); 
-    
+    // Conexão Wi-Fi e Cloud (bloqueante - espera a conexão)
+    Serial.print("Conectando ao Arduino Cloud");
+    while (ArduinoCloud.connected() != true) {
+        Serial.print(".");
+        delay(500);
+    }
+    Serial.println("\n[CLOUD] Conectado!");
+
+    // 2. Configuração do Hardware (permanece a mesma)
     SPI.begin();
     mfrc522.PCD_Init();
     
     pinMode(PIR_PIN, INPUT);
-    pinMode(LED_VERMELHO, OUTPUT);
-    pinMode(LED_VERDE, OUTPUT);
+    pinMode(LED_VERMELHO, OUTPUT); [cite: 27]
+    pinMode(LED_VERDE, OUTPUT); [cite: 27]
     
     ledOff();
     
-    Serial.println("--- SISTEMA INICIADO ---");
+    // ... (Verificação de Firmware do MFRC522)
+    // Seu código de verificação aqui...
     
-    byte v = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
-    Serial.print("Leitor MFRC522 Firmware Version: ");
-    Serial.println(v, HEX);
-    
-    if (v == 0x00 || v == 0xFF) {
-        Serial.println("[ERRO CRÍTICO] Leitor MFRC522 não encontrado ou falha de comunicação.");
-    }
-
-    Serial.println("Verificando PIR e leitor RFID...");
+    Serial.println("--- SISTEMA INICIADO E CONECTADO AO CLOUD ---");
     Serial.println();
 }
 
 void loop()
 {
+    // MANTÉM A CONEXÃO ATIVA com o Cloud
+    ArduinoCloud.update();
+    
     // Lógica de delay não-bloqueante
     if (millis() - lastInteractionTime < MIN_INTERACTION_DELAY) {
-        return; 
+        return; [cite: 31]
     }
     lastInteractionTime = millis();
 
     // 1. LEITURA DO SENSOR DE PRESENÇA (PIR)
-    int presenceState = digitalRead(PIR_PIN);
-
+    int presenceState = digitalRead(PIR_PIN); [cite: 32]
     // Debounce (verifica duas vezes)
     if (presenceState == LOW) {
-        delay(80); 
+        delay(80); [cite: 33]
         presenceState = digitalRead(PIR_PIN); 
     }
 
     if (presenceState == LOW) {
-        ledOff();
+        ledOff(); [cite: 34]
+        haPresenca = false; // <<< ATRIBUIÇÃO AO CLOUD
+        tagUID = "---";     // <<< ATRIBUIÇÃO AO CLOUD (limpa a tag)
         Serial.println("Nenhuma pessoa detectada");
         return; 
     }
     
     // SE HÁ PRESENÇA (presenceState == HIGH)
-    bool isTagPresent = mfrc522.PICC_IsNewCardPresent();
-    bool accessGranted = false;
+    haPresenca = true; // <<< ATRIBUIÇÃO AO CLOUD
     
-    char uidLido[25] = ""; 
+    bool isTagPresent = mfrc522.PICC_IsNewCardPresent(); [cite: 35]
+    bool accessGranted = false; // Variável de controle local
+    
+    uidLido[0] = '\0'; // Limpa o buffer local da Tag
     
     // --- VERIFICAÇÃO DA TAG ---
     if (isTagPresent && mfrc522.PICC_ReadCardSerial())
     {
         int pos = 0;
         
+        // Conversão do UID para string (permanece a mesma) [cite: 37]
         for (byte i = 0; i < mfrc522.uid.size; i++)
         {
             pos += sprintf(&uidLido[pos], "%s%02X", (i == 0 ? "" : " "), mfrc522.uid.uidByte[i]);
@@ -206,29 +221,38 @@ void loop()
         // Comparação case-insensitive (strcasecmp)
         if (strcasecmp(uidLido, UID_VALIDO_CHAR) == 0) 
         {
-            accessGranted = true;
-            Serial.print("ACESSO PERMITIDO! Tag valida: ");
-            Serial.println(uidLido);
+            accessGranted = true; [cite: 38]
             ledVerde(); 
         }
         else 
         {
-            accessGranted = false;
-            Serial.print("ACESSO NEGADO! Tag nao cadastrada: ");
-            Serial.println(uidLido);
+            accessGranted = false; [cite: 39]
             ledVermelho(); 
         }
         
-        mfrc522.PICC_HaltA(); 
-        mfrc522.PCD_StopCrypto1();
+        mfrc522.PICC_HaltA(); [cite: 40]
+        mfrc522.PCD_StopCrypto1(); [cite: 40]
+        
+        // 4. ATRIBUIÇÃO AO CLOUD (Substitui sendDataToAPI)
+        acessoPermitido = accessGranted;
+        tagUID = String(uidLido); // Converte char* para String do Cloud
+
+        Serial.print("Interacao completa. Acesso: ");
+        Serial.println(accessGranted ? "PERMITIDO" : "NEGADO");
     }
     else 
     {
-        accessGranted = false;
+        // Pessoa detectada, mas sem Tag
+        accessGranted = false; [cite: 41]
         ledVermelho(); 
+        
+        // 4. ATRIBUIÇÃO AO CLOUD
+        acessoPermitido = accessGranted;
+        tagUID = "SEM TAG";
+
         Serial.println("Pessoa detectada mas sem EPI (RFID).");
     }
-
-    // 4. ENVIO DE DADOS PARA O SERVIDOR (API Flask)
-    sendDataToAPI(true, accessGranted, uidLido);
+    // As variáveis 'acessoPermitido', 'haPresenca' e 'tagUID' são enviadas ao Cloud
+    // automaticamente pela chamada 'ArduinoCloud.update()' no início do loop,
+    // se seus valores tiverem mudado (On Change).
 }
